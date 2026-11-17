@@ -1,0 +1,8 @@
+test
+test_tsan
+*.o
+*.zip
+bsai24077/
+prompt.txt
+*.pdf
+*.html
