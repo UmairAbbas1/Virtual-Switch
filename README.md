@@ -1,34 +1,50 @@
-# Lab Task: Virtual Switch - Protocol Header & Concurrent MAC Table
+# Virtual Switch
 
-## Files
+Operating Systems, Fall 2026 - Project
 
-- frame.h / frame.c : 17-byte packed frame header, serialize and deserialize using htons / ntohs
-- mac_table.h / mac_table.c : MAC table (MAC -> port) with 16 buckets and one mutex per bucket (striped locking)
-- test.c : test program for the header and the MAC table (single thread and 4 threads)
-- Makefile
+A software network switch in C. The switch is a multithreaded TCP server on Linux.
+Each host is a separate process that connects to one switch port and sends frames
+to other hosts. The switch learns which MAC is on which port and forwards frames
+only where they need to go. Unknown destinations and broadcasts go to every port.
 
 ## Build
 
-    make
+    make          builds switch, host and test
+    make tsan     builds switch_tsan with ThreadSanitizer
+    make clean    removes the programs
+
+All files build with `gcc -std=c11 -Wall -Wextra -Werror -g -O0`.
 
 ## Run
 
+Start the switch:
+
+    ./switch <tcp_port> <num_ports>
+    ./switch 9000 4
+
+Start hosts (each one in its own terminal):
+
+    ./host <switch_ip> <tcp_port> <mac>
+    ./host 127.0.0.1 9000 00:00:00:00:00:0a
+    ./host 127.0.0.1 9000 00:00:00:00:00:0b
+
+In a host, type a line to send a frame:
+
+    00:00:00:00:00:0b hello     send to one host
+    all hello                   broadcast to everyone
+
+Received frames are printed as:
+
+    from 00:00:00:00:00:0A vlan 1 prio 1: hello
+
+Unit test for the frame header and MAC table:
+
     ./test
 
-## ThreadSanitizer
+## Frame format
 
-    make tsan
-    setarch -R ./test_tsan
-
-## Valgrind
-
-    valgrind --leak-check=full ./test
-
-## Clean
-
-    make clean
-
-## Header format
+Every frame is a 17-byte header followed by the payload.
+length and vlan are in network byte order.
 
 | Field    | Size    | Offset |
 |----------|---------|--------|
@@ -38,22 +54,51 @@
 | vlan     | 2 bytes | 14     |
 | priority | 1 byte  | 16     |
 
-length and vlan are stored in network byte order.
+## Files
 
-## MAC table
+| File        | What it does |
+|-------------|--------------|
+| frame.c/h   | header serialize/deserialize, full reads and writes, reference-counted frames |
+| mac_table.c/h | MAC table with one lock per bucket, aging, LRU eviction, per-port count |
+| switch.c    | the switch: ports, queues, threads, forwarding, port semaphore |
+| host.c      | test host that sends and receives frames |
+| test.c      | unit test for frame and MAC table |
 
-- 16 buckets, each bucket is a linked list with its own pthread_mutex_t
-- mac_table_lookup() returns the port, or -1 if the MAC is not found
-- mac_table_insert() adds a new MAC, or updates the port if the MAC moved
-- When a MAC moves it prints: MAC moved: <mac> port X -> port Y
+## Settings
 
-## Expected output
+These are fixed in the code for now:
 
-    header size = 17
-    bytes: 05 DC AA BB CC 00 00 01 FF FF FF FF FF FF 00 0A 01
-    length=1500 vlan=10 priority=1 src=AA:BB:CC:00:00:01 dst=FF:FF:FF:FF:FF:FF
-    lookup a -> port 1
-    MAC moved: AA:BB:CC:00:00:01 port 1 -> port 3
-    lookup a -> port 3
-    lookup unknown -> port -1
-    threads done
+| Setting          | Value | Where |
+|------------------|-------|-------|
+| queue size per port | 64 frames | switch.c `QUEUE_SIZE` |
+| MACs per port (port security) | 8 | switch.c `PORT_MAX_MACS` |
+| MAC table size   | 1024 | mac_table.h `MAX_ENTRIES` |
+| MAC aging time   | 60 s | switch.c `AGE_SECONDS` |
+| wait for free port | 5 s | switch.c `WAIT_SECONDS` |
+
+## Progress
+
+Tier 1 (Core):
+
+- [x] 1. Wire protocol: partial reads/writes, mid-frame disconnect, SIGPIPE ignored
+- [x] 2. No head-of-line blocking: bounded queue and sender thread per port, drops counted
+- [x] 3. Shared broadcast frames with reference counts
+- [x] 4. MAC table: striped locks, aging, MAC moved, LRU size limit, port security
+- [x] 5. Port limit with a counting semaphore and sem_timedwait, "switch full" reply
+
+Tier 2 (Advanced):
+
+- [ ] 6. QoS priority queues with weighted round robin
+- [ ] 7. Rate limiting with a token bucket
+- [ ] 8. VLANs and a trunk port
+- [ ] 9. Port mirroring
+- [ ] 10. Live reconfiguration
+- [ ] 11. swctl admin tool and shared memory stats
+- [ ] 12. Signals with sigwait (SIGINT, SIGHUP, SIGUSR1)
+- [ ] 13. Logger thread
+
+Tier 3 (Bonus):
+
+- [ ] Two switches linked by pipes
+- [ ] Supervisor
+- [ ] Benchmark
