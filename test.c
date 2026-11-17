@@ -15,7 +15,7 @@ void *worker(void *arg)
     for (int i = 0; i < 100; i++) {
         mac[5] = i;
         mac[4] = id;
-        if (mac_table_insert(&table, mac, id) != 0)
+        if (mac_table_insert(&table, mac, id) < 0)
             printf("insert failed\n");
         mac_table_lookup(&table, mac);
     }
@@ -44,13 +44,12 @@ int main(void)
     printf("\n");
 
     frame_deserialize(buf, &h2);
-    printf("length=%d vlan=%d priority=%d src=", h2.length, h2.vlan, h2.priority);
-    print_mac(h2.src);
-    printf(" dst=");
-    print_mac(h2.dst);
-    printf("\n");
+    char s1[18], s2[18];
+    mac_to_str(h2.src, s1);
+    mac_to_str(h2.dst, s2);
+    printf("length=%d vlan=%d priority=%d src=%s dst=%s\n", h2.length, h2.vlan, h2.priority, s1, s2);
 
-    if (mac_table_init(&table) != 0) {
+    if (mac_table_init(&table, MAX_ENTRIES) != 0) {
         printf("init failed\n");
         return 1;
     }
