@@ -30,6 +30,8 @@ void mac_table_remove(struct mac_table *t, uint8_t *mac);
 void mac_table_remove_port(struct mac_table *t, int port);
 int mac_table_count_port(struct mac_table *t, int port);
 void mac_table_age(struct mac_table *t, int max_age);
+int mac_table_clear(struct mac_table *t);
+int mac_table_to_text(struct mac_table *t, char *buf, int size);
 void mac_table_destroy(struct mac_table *t);
 
 #endif

@@ -248,3 +248,52 @@ void mac_table_destroy(struct mac_table *t)
     }
     pthread_mutex_destroy(&t->count_lock);
 }
+
+int mac_table_clear(struct mac_table *t)
+{
+    int removed = 0;
+
+    for (int i = 0; i < NUM_BUCKETS; i++)
+        pthread_mutex_lock(&t->locks[i]);
+
+    for (int i = 0; i < NUM_BUCKETS; i++) {
+        struct mac_entry *e = t->buckets[i];
+        while (e != NULL) {
+            struct mac_entry *next = e->next;
+            free(e);
+            removed++;
+            e = next;
+        }
+        t->buckets[i] = NULL;
+    }
+
+    for (int i = NUM_BUCKETS - 1; i >= 0; i--)
+        pthread_mutex_unlock(&t->locks[i]);
+
+    change_count(t, -removed);
+    return removed;
+}
+
+int mac_table_to_text(struct mac_table *t, char *buf, int size)
+{
+    time_t now = time(NULL);
+    char str[18];
+    int pos = 0;
+    int n = 0;
+
+    pos += snprintf(buf, size, "MAC                PORT  AGE\n");
+    for (int i = 0; i < NUM_BUCKETS; i++) {
+        pthread_mutex_lock(&t->locks[i]);
+        for (struct mac_entry *e = t->buckets[i]; e != NULL; e = e->next) {
+            if (pos >= size - 64)
+                break;
+            mac_to_str(e->mac, str);
+            pos += snprintf(buf + pos, size - pos, "%s  %4d  %lds\n", str, e->port,
+                            (long)(now - e->last_seen));
+            n++;
+        }
+        pthread_mutex_unlock(&t->locks[i]);
+    }
+    snprintf(buf + pos, size - pos, "%d entries\n", n);
+    return n;
+}
