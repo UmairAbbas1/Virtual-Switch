@@ -9,3 +9,5 @@ prompt.txt
 switch
 host
 switch_tsan
+swctl
+mac_dump.txt
