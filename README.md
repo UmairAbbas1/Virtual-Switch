@@ -9,7 +9,7 @@ only where they need to go. Unknown destinations and broadcasts go to every port
 
 ## Build
 
-    make          builds switch, host and test
+    make          builds switch, host, swctl and test
     make tsan     builds switch_tsan with ThreadSanitizer
     make clean    removes the programs
 
@@ -37,6 +37,23 @@ Received frames are printed as:
 
     from 00:00:00:00:00:0A vlan 1 prio 1: hello
 
+Admin tool (the switch must be running):
+
+    ./swctl show mac          list learned MACs
+    ./swctl show ports        state, queue and counters for each port
+    ./swctl clear mac         empty the MAC table
+    ./swctl stats             counters from shared memory
+    ./swctl stats --watch     live counters, refresh every second
+
+swctl talks to the switch over the UNIX socket `/tmp/vswitch.sock`.
+`stats` reads the shared memory `/vswitch_stats` directly.
+
+Signals:
+
+    kill -USR1 <pid>    dump the MAC table to mac_dump.txt
+    kill -HUP <pid>     config reload (prints a message for now)
+    Ctrl+C or kill -INT <pid>    clean shutdown
+
 Unit test for the frame header and MAC table:
 
     ./test
@@ -60,7 +77,9 @@ length and vlan are in network byte order.
 |-------------|--------------|
 | frame.c/h   | header serialize/deserialize, full reads and writes, reference-counted frames |
 | mac_table.c/h | MAC table with one lock per bucket, aging, LRU eviction, per-port count |
-| switch.c    | the switch: ports, queues, threads, forwarding, port semaphore |
+| switch.c    | the switch: ports, queues, threads, forwarding, port semaphore, admin and signal threads |
+| shm_stats.c/h | per-port counters in POSIX shared memory with a process-shared mutex |
+| swctl.c     | admin tool |
 | host.c      | test host that sends and receives frames |
 | test.c      | unit test for frame and MAC table |
 
@@ -93,8 +112,8 @@ Tier 2 (Advanced):
 - [ ] 8. VLANs and a trunk port
 - [ ] 9. Port mirroring
 - [ ] 10. Live reconfiguration
-- [ ] 11. swctl admin tool and shared memory stats
-- [ ] 12. Signals with sigwait (SIGINT, SIGHUP, SIGUSR1)
+- [ ] 11. swctl admin tool and shared memory stats (done: show mac, show ports, clear mac, stats, stats --watch; todo: shutdown, up, vlan, mirror)
+- [ ] 12. Signals with sigwait (done: SIGINT clean shutdown, SIGUSR1 dump; todo: SIGHUP config reload)
 - [ ] 13. Logger thread
 
 Tier 3 (Bonus):
