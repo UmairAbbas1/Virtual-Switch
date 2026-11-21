@@ -49,7 +49,7 @@ int main(void)
     mac_to_str(h2.dst, s2);
     printf("length=%d vlan=%d priority=%d src=%s dst=%s\n", h2.length, h2.vlan, h2.priority, s1, s2);
 
-    if (mac_table_init(&table, MAX_ENTRIES) != 0) {
+    if (mac_table_init(&table, MAX_ENTRIES, NULL, 0, 256) != 0) {
         printf("init failed\n");
         return 1;
     }
