@@ -38,6 +38,8 @@ int main(int argc, char *argv[])
     char line[1600];
     char dst[32];
     pthread_t th;
+    int prio = 1;
+    int vlan = 1;
 
     if (argc != 4) {
         printf("usage: %s <switch_ip> <tcp_port> <mac>\n", argv[0]);
@@ -74,6 +76,7 @@ int main(int argc, char *argv[])
     }
 
     printf("connected, type: <dst_mac> <message>  or  all <message>\n");
+    printf("  prio <0-2> sets the priority, vlan <1-4094> sets the vlan field\n");
     fflush(stdout);
 
     while (fgets(line, sizeof(line), stdin) != NULL) {
@@ -82,6 +85,20 @@ int main(int argc, char *argv[])
         if (sscanf(line, "%31s %n", dst, &n) != 1)
             continue;
 
+        if (strcmp(dst, "prio") == 0) {
+            if (sscanf(line + n, "%d", &prio) != 1 || prio < 0 || prio > 2) {
+                printf("prio must be 0, 1 or 2\n");
+                prio = 1;
+            }
+            continue;
+        }
+        if (strcmp(dst, "vlan") == 0) {
+            if (sscanf(line + n, "%d", &vlan) != 1 || vlan < 1 || vlan > 4094) {
+                printf("vlan must be 1 to 4094\n");
+                vlan = 1;
+            }
+            continue;
+        }
         if (strcmp(dst, "all") == 0) {
             memset(f.h.dst, 0xFF, 6);
         } else if (str_to_mac(dst, f.h.dst) < 0) {
@@ -89,8 +106,8 @@ int main(int argc, char *argv[])
             continue;
         }
         memcpy(f.h.src, my_mac, 6);
-        f.h.vlan = 1;
-        f.h.priority = 1;
+        f.h.vlan = vlan;
+        f.h.priority = prio;
         f.h.length = strlen(line + n);
         if (f.h.length > MAX_PAYLOAD)
             f.h.length = MAX_PAYLOAD;
