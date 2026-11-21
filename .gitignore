@@ -11,3 +11,4 @@ host
 switch_tsan
 swctl
 mac_dump.txt
+switch.log
