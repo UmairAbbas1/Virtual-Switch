@@ -9,7 +9,7 @@ only where they need to go. Unknown destinations and broadcasts go to every port
 
 ## Build
 
-    make          builds switch, host, swctl and test
+    make          builds switch, host, swctl, test, twoswitch, supervisor and bench
     make tsan     builds switch_tsan with ThreadSanitizer
     make clean    removes the programs
 
@@ -19,9 +19,16 @@ All files build with `gcc -std=c11 -Wall -Wextra -Werror -g -O0`.
 
 Start the switch (the config file is optional):
 
-    ./switch <tcp_port> <num_ports> [config_file]
+    ./switch [-n name] [-l rfd,wfd] [-r] <tcp_port> <num_ports> [config_file]
     ./switch 9000 4
     ./switch 9000 6 switch.conf
+
+Options (mostly used by the Tier 3 programs):
+
+    -n name      named switch: admin socket /tmp/vswitch-<name>.sock, shared memory
+                 /vswitch_stats-<name> and /vswitch_mac-<name>, log switch-<name>.log
+    -l rfd,wfd   the last port is a trunk link that reads and writes these pipe fds
+    -r           take the MAC table back from shared memory (after a crash)
 
 Start hosts (each one in its own terminal):
 
@@ -55,6 +62,8 @@ Admin tool (the switch must be running):
     ./swctl trunk <port>      make <port> the trunk (trunk off: no trunk)
     ./swctl rate <port> <n>   limit <port> to n frames per second (0 = no limit)
 
+For a named switch use `./swctl -n <name> <command>`.
+
 swctl talks to the switch over the UNIX socket `/tmp/vswitch.sock`.
 `stats` reads the shared memory `/vswitch_stats` directly.
 
@@ -63,6 +72,26 @@ Signals:
     kill -USR1 <pid>    dump the MAC table to mac_dump.txt
     kill -HUP <pid>     reload the config file (a bad file is rejected, old settings stay)
     Ctrl+C or kill -INT <pid>    clean shutdown
+
+Two switches linked by two pipes (Tier 3):
+
+    ./twoswitch <tcp_port_A> <tcp_port_B> <num_ports> [config_A config_B]
+    ./twoswitch 9000 9001 4
+    ./host 127.0.0.1 9000 00:00:00:00:00:0a     host on switch A
+    ./host 127.0.0.1 9001 00:00:00:00:00:0b     host on switch B
+    ./swctl -n A show mac
+
+The last port of each switch is the trunk between them. Ctrl+C stops both.
+
+Supervisor that restarts a crashed switch (Tier 3):
+
+    ./supervisor <switch arguments>
+    ./supervisor 9000 4 switch.conf
+    kill -9 $(pgrep -x switch)      the switch is restarted, MAC table kept
+
+Lock benchmark (Tier 3), writes bench.csv:
+
+    ./bench
 
 Unit test for the frame header and MAC table:
 
@@ -120,7 +149,7 @@ length and vlan are in network byte order.
 | File        | What it does |
 |-------------|--------------|
 | frame.c/h   | header serialize/deserialize, full reads and writes, reference-counted frames |
-| mac_table.c/h | MAC table with one lock per bucket, aging, LRU eviction, per-port count |
+| mac_table.c/h | MAC table in shared memory, one lock per bucket, aging, LRU eviction, per-port count |
 | switch.c    | the switch: ports, queues, threads, forwarding, port semaphore, admin and signal threads |
 | shm_stats.c/h | per-port counters in POSIX shared memory with a process-shared mutex |
 | logger.c/h  | log queue and logger thread that writes timestamped lines |
@@ -129,6 +158,11 @@ length and vlan are in network byte order.
 | swctl.c     | admin tool |
 | host.c      | test host that sends and receives frames |
 | test.c      | unit test for frame and MAC table |
+| twoswitch.c | starts two switches joined by two pipes |
+| supervisor.c | restarts the switch if it crashes |
+| bench.c     | lock benchmark: global, striped, read-write lock |
+| report.tex  | project report (report.pdf) |
+| benchmark.tex | benchmark report with graph (benchmark.pdf) |
 
 ## Fixed limits
 
@@ -137,6 +171,7 @@ length and vlan are in network byte order.
 | queue size per priority per port | 64 frames | switch.c `QUEUE_SIZE` |
 | ports | 64 | shm_stats.h `MAX_PORTS` |
 | token refill tick | 100 ms | switch.c `TICK_MS` |
+| MAC table size (most) | 1024 | mac_table.h `MAX_ENTRIES` |
 
 ## Progress
 
@@ -161,6 +196,6 @@ Tier 2 (Advanced):
 
 Tier 3 (Bonus):
 
-- [ ] Two switches linked by pipes
-- [ ] Supervisor
-- [ ] Benchmark
+- [x] Two switches linked by pipes
+- [x] Supervisor
+- [x] Benchmark

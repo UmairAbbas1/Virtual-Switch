@@ -12,3 +12,8 @@ switch_tsan
 swctl
 mac_dump.txt
 switch.log
+twoswitch
+supervisor
+bench
+switch-*.log
+mac_dump-*.txt
