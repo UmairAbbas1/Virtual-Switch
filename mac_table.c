@@ -4,6 +4,7 @@
 #include <string.h>
 #include "mac_table.h"
 #include "frame.h"
+#include "logger.h"
 
 static int hash_mac(uint8_t *mac)
 {
@@ -48,7 +49,7 @@ static int update(struct mac_entry *e, int port)
     if (e->port == port)
         return 0;
     mac_to_str(e->mac, str);
-    printf("MAC moved: %s port %d -> port %d\n", str, e->port, port);
+    log_msg("MAC moved: %s port %d -> port %d", str, e->port, port);
     e->port = port;
     return 2;
 }
@@ -74,7 +75,7 @@ static void evict_oldest(struct mac_table *t)
 
     if (found) {
         mac_to_str(old_mac, str);
-        printf("MAC table full, evicting %s\n", str);
+        log_msg("MAC table full, evicting %s", str);
         mac_table_remove(t, old_mac);
     }
 }
@@ -221,7 +222,7 @@ void mac_table_age(struct mac_table *t, int max_age)
             if (now - (*pp)->last_seen > max_age) {
                 struct mac_entry *e = *pp;
                 mac_to_str(e->mac, str);
-                printf("MAC aged out: %s\n", str);
+                log_msg("MAC aged out: %s", str);
                 *pp = e->next;
                 free(e);
                 removed++;
