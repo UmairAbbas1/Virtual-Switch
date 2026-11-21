@@ -6,11 +6,11 @@
 #include <sys/mman.h>
 #include "shm_stats.h"
 
-struct shm_stats *stats_create(int num_ports)
+struct shm_stats *stats_create(const char *name, int num_ports)
 {
     pthread_mutexattr_t attr;
 
-    int fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    int fd = shm_open(name, O_CREAT | O_RDWR, 0666);
     if (fd < 0) {
         perror("shm_open");
         return NULL;
@@ -42,9 +42,9 @@ struct shm_stats *stats_create(int num_ports)
     return s;
 }
 
-struct shm_stats *stats_open(void)
+struct shm_stats *stats_open(const char *name)
 {
-    int fd = shm_open(SHM_NAME, O_RDWR, 0);
+    int fd = shm_open(name, O_RDWR, 0);
     if (fd < 0)
         return NULL;
     struct shm_stats *s = mmap(NULL, sizeof(struct shm_stats), PROT_READ | PROT_WRITE,
@@ -85,9 +85,9 @@ void stats_close(struct shm_stats *s)
     munmap(s, sizeof(struct shm_stats));
 }
 
-void stats_destroy(struct shm_stats *s)
+void stats_destroy(struct shm_stats *s, const char *name)
 {
     pthread_mutex_destroy(&s->lock);
     munmap(s, sizeof(struct shm_stats));
-    shm_unlink(SHM_NAME);
+    shm_unlink(name);
 }

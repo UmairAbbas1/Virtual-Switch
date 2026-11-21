@@ -8,7 +8,8 @@
 #include "frame.h"
 #include "shm_stats.h"
 
-#define SOCK_PATH "/tmp/vswitch.sock"
+char sock_path[108] = "/tmp/vswitch.sock";
+char stats_name[64] = "/vswitch_stats";
 
 void print_stats(struct shm_stats *s)
 {
@@ -23,7 +24,7 @@ void print_stats(struct shm_stats *s)
 
 int stats_command(int watch)
 {
-    struct shm_stats *s = stats_open();
+    struct shm_stats *s = stats_open(stats_name);
     if (s == NULL) {
         printf("cannot open shared memory, is the switch running?\n");
         return 1;
@@ -56,9 +57,9 @@ int send_command(char *cmd)
     }
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCK_PATH, sizeof(addr.sun_path) - 1);
+    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        printf("cannot connect to switch at %s\n", SOCK_PATH);
+        printf("cannot connect to switch at %s\n", sock_path);
         close(fd);
         return 1;
     }
@@ -79,8 +80,14 @@ int main(int argc, char *argv[])
 {
     char cmd[256] = "";
 
+    if (argc >= 3 && strcmp(argv[1], "-n") == 0) {
+        snprintf(sock_path, sizeof(sock_path), "/tmp/vswitch-%s.sock", argv[2]);
+        snprintf(stats_name, sizeof(stats_name), "/vswitch_stats-%s", argv[2]);
+        argv += 2;
+        argc -= 2;
+    }
     if (argc < 2) {
-        printf("usage: %s <command>\n", argv[0]);
+        printf("usage: swctl [-n switch_name] <command>\n");
         printf("commands:\n"
                "  show mac | show ports | clear mac | stats | stats --watch\n"
                "  shutdown <port> | up <port> | vlan <port> <vlan>\n"

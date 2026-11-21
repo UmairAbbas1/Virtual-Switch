@@ -3,7 +3,6 @@
 
 #include <pthread.h>
 
-#define SHM_NAME "/vswitch_stats"
 #define MAX_PORTS 64
 
 #define STAT_IN 0
@@ -24,11 +23,11 @@ struct shm_stats {
     struct port_stats ports[MAX_PORTS];
 };
 
-struct shm_stats *stats_create(int num_ports);
-struct shm_stats *stats_open(void);
+struct shm_stats *stats_create(const char *name, int num_ports);
+struct shm_stats *stats_open(const char *name);
 void stats_add(struct shm_stats *s, int port, int which);
 int stats_read(struct shm_stats *s, struct port_stats *out);
 void stats_close(struct shm_stats *s);
-void stats_destroy(struct shm_stats *s);
+void stats_destroy(struct shm_stats *s, const char *name);
 
 #endif
