@@ -81,7 +81,11 @@ int main(int argc, char *argv[])
 
     if (argc < 2) {
         printf("usage: %s <command>\n", argv[0]);
-        printf("commands: show mac | show ports | clear mac | stats | stats --watch\n");
+        printf("commands:\n"
+               "  show mac | show ports | clear mac | stats | stats --watch\n"
+               "  shutdown <port> | up <port> | vlan <port> <vlan>\n"
+               "  mirror <port> <sniffer_port> | mirror <port> off\n"
+               "  trunk <port> | trunk off | rate <port> <frames_per_sec>\n");
         return 1;
     }
 
