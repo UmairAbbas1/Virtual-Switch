@@ -4,6 +4,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <poll.h>
 #include <arpa/inet.h>
 #include "frame.h"
 
@@ -106,6 +107,56 @@ int frame_recv(int fd, struct frame *f)
     if (f->h.length > MAX_PAYLOAD)
         return -1;
     if (read_full(fd, f->payload, f->h.length) < 0)
+        return -1;
+    return 0;
+}
+
+/*
+ * Like read_full, but also watches wake_fd: when something is written to it,
+ * give up and return -1. Used for pipes, which cannot be shutdown() like sockets.
+ */
+static int read_full_wake(int fd, int wake_fd, void *buf, size_t n)
+{
+    size_t got = 0;
+    struct pollfd pf[2];
+
+    while (got < n) {
+        pf[0].fd = fd;
+        pf[0].events = POLLIN;
+        pf[1].fd = wake_fd;
+        pf[1].events = POLLIN;
+        if (poll(pf, 2, -1) < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (pf[1].revents)
+            return -1;
+        ssize_t r = read(fd, (char *)buf + got, n - got);
+        if (r == 0)
+            return -1;
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        got += r;
+    }
+    return 0;
+}
+
+int frame_recv_wake(int fd, int wake_fd, struct frame *f)
+{
+    uint8_t buf[HEADER_SIZE];
+
+    if (wake_fd < 0)
+        return frame_recv(fd, f);
+    if (read_full_wake(fd, wake_fd, buf, HEADER_SIZE) < 0)
+        return -1;
+    frame_deserialize(buf, &f->h);
+    if (f->h.length > MAX_PAYLOAD)
+        return -1;
+    if (read_full_wake(fd, wake_fd, f->payload, f->h.length) < 0)
         return -1;
     return 0;
 }

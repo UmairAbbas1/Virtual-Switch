@@ -32,6 +32,7 @@ int is_broadcast(uint8_t *mac);
 int read_full(int fd, void *buf, size_t n);
 int write_full(int fd, void *buf, size_t n);
 int frame_recv(int fd, struct frame *f);
+int frame_recv_wake(int fd, int wake_fd, struct frame *f);
 int frame_send(int fd, struct frame *f);
 
 struct frame *frame_new(void);
