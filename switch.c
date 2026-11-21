@@ -32,8 +32,6 @@
 #define QUEUE_SIZE 64
 #define AGE_CHECK_SECONDS 5
 #define TICK_MS 100
-#define SOCK_PATH "/tmp/vswitch.sock"
-#define DUMP_FILE "mac_dump.txt"
 #define TEXT_SIZE 65536
 
 #define PORT_FREE 0
@@ -69,6 +67,8 @@ struct port {
 
     /* protected by lock */
     int fd;
+    int wfd;
+    int wake[2];
     int open;
     struct fqueue q[3];
     int total;
@@ -96,6 +96,11 @@ pthread_mutex_t ports_lock = PTHREAD_MUTEX_INITIALIZER;
 int server_fd = -1;
 int admin_fd = -1;
 char *config_path;
+char sock_path[108] = "/tmp/vswitch.sock";
+char stats_name[64] = "/vswitch_stats";
+char mac_name[64] = "/vswitch_mac";
+char dump_file[100] = "mac_dump.txt";
+int link_port = -1;
 
 struct config cfg;
 pthread_mutex_t cfg_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -141,6 +146,20 @@ void deadline_ms(struct timespec *ts, int ms)
 long ms_between(struct timespec *a, struct timespec *b)
 {
     return (b->tv_sec - a->tv_sec) * 1000 + (b->tv_nsec - a->tv_nsec) / 1000000;
+}
+
+/*
+ * Wake the rx thread of a port so it stops reading (p->lock held).
+ * A socket is shut down; a pipe cannot be, so a byte goes on its wake pipe.
+ */
+void kick_port(struct port *p)
+{
+    if (p->wake[1] >= 0) {
+        if (write(p->wake[1], "x", 1) < 0)
+            log_msg("port %d: wake write failed: %s", p->id, strerror(errno));
+    } else if (p->fd >= 0) {
+        shutdown(p->fd, SHUT_RDWR);
+    }
 }
 
 /* ---------- queues ---------- */
@@ -260,7 +279,7 @@ void *tx_thread(void *arg)
         it = pick(p);
         if (p->rate > 0)
             p->tokens -= 10;
-        int fd = p->fd;
+        int fd = p->wfd;
         int m = p->mirror_to;
         pthread_mutex_unlock(&p->lock);
 
@@ -294,7 +313,7 @@ void close_port(struct port *p)
     p->open = 0;
     pthread_cond_broadcast(&p->not_empty);
     pthread_cond_broadcast(&p->can_send);
-    shutdown(p->fd, SHUT_RDWR);
+    kick_port(p);
     pthread_mutex_unlock(&p->lock);
 
     pthread_join(p->tx, NULL);
@@ -302,7 +321,16 @@ void close_port(struct port *p)
 
     pthread_mutex_lock(&p->lock);
     close(p->fd);
+    if (p->wfd != p->fd)
+        close(p->wfd);
+    if (p->wake[0] >= 0) {
+        close(p->wake[0]);
+        close(p->wake[1]);
+    }
     p->fd = -1;
+    p->wfd = -1;
+    p->wake[0] = -1;
+    p->wake[1] = -1;
     pthread_mutex_unlock(&p->lock);
 
     pthread_mutex_lock(&ports_lock);
@@ -325,11 +353,16 @@ void *rx_thread(void *arg)
     char str[18];
     int violation = 0;
 
+    pthread_mutex_lock(&p->lock);
+    int in_fd = p->fd;
+    int wake_fd = p->wake[0];
+    pthread_mutex_unlock(&p->lock);
+
     while (1) {
         struct frame *f = frame_new();
         if (f == NULL)
             break;
-        if (frame_recv(p->fd, f) < 0) {
+        if (frame_recv_wake(in_fd, wake_fd, f) < 0) {
             frame_put(f);
             break;
         }
@@ -456,7 +489,7 @@ void apply_config(struct config *c)
     lock_all_ports();
     for (int i = 0; i < num_ports; i++) {
         struct port *p = &ports[i];
-        int trunk = (i == c->trunk);
+        int trunk = (i == (link_port >= 0 ? link_port : c->trunk));
         changed[i] = (p->vlan != c->vlan[i] || p->trunk != trunk);
         p->vlan = c->vlan[i];
         p->trunk = trunk;
@@ -557,8 +590,7 @@ void port_shutdown(int fd, int i)
         join = p->need_join;
         p->need_join = 0;
         pthread_mutex_lock(&p->lock);
-        if (p->fd >= 0)
-            shutdown(p->fd, SHUT_RDWR);
+        kick_port(p);
         pthread_mutex_unlock(&p->lock);
         pthread_mutex_unlock(&ports_lock);
         if (join)
@@ -793,18 +825,18 @@ void dump_mac_table(void)
     localtime_r(&now, &tm);
     strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", &tm);
 
-    FILE *f = fopen(DUMP_FILE, "w");
+    FILE *f = fopen(dump_file, "w");
     if (f == NULL) {
-        log_msg("MAC dump failed: cannot open %s", DUMP_FILE);
+        log_msg("MAC dump failed: cannot open %s", dump_file);
         free(buf);
         return;
     }
     fprintf(f, "MAC table dump at %s\n", when);
     fputs(buf, f);
     if (fclose(f) != 0)
-        log_msg("MAC dump failed: cannot write %s", DUMP_FILE);
+        log_msg("MAC dump failed: cannot write %s", dump_file);
     else
-        log_msg("MAC table dumped to %s", DUMP_FILE);
+        log_msg("MAC table dumped to %s", dump_file);
     free(buf);
 }
 
@@ -872,6 +904,36 @@ int wait_for_port(void)
     return r;
 }
 
+/* start the threads of port i (ports_lock held, port is free) */
+void open_port(int i, int rfd, int wfd, int pipe_link)
+{
+    struct port *p = &ports[i];
+    if (p->need_join)
+        pthread_join(p->rx, NULL);
+    p->state = PORT_USED;
+    p->need_join = 1;
+
+    pthread_mutex_lock(&p->lock);
+    p->fd = rfd;
+    p->wfd = wfd;
+    if (pipe_link && pipe(p->wake) < 0) {
+        log_msg("pipe failed: %s", strerror(errno));
+        exit(1);
+    }
+    p->open = 1;
+    p->wrr_cur = 0;
+    p->wrr_left = p->weights[0];
+    p->aged_this_round = 0;
+    p->tokens = p->rate * 10;
+    pthread_mutex_unlock(&p->lock);
+
+    if (pthread_create(&p->tx, NULL, tx_thread, p) != 0 ||
+        pthread_create(&p->rx, NULL, rx_thread, p) != 0) {
+        log_msg("pthread_create failed");
+        exit(1);
+    }
+}
+
 void start_port(int fd)
 {
     int i;
@@ -887,26 +949,7 @@ void start_port(int fd)
         close(fd);
         return;
     }
-    struct port *p = &ports[i];
-    if (p->need_join)
-        pthread_join(p->rx, NULL);
-    p->state = PORT_USED;
-    p->need_join = 1;
-
-    pthread_mutex_lock(&p->lock);
-    p->fd = fd;
-    p->open = 1;
-    p->wrr_cur = 0;
-    p->wrr_left = p->weights[0];
-    p->aged_this_round = 0;
-    p->tokens = p->rate * 10;
-    pthread_mutex_unlock(&p->lock);
-
-    if (pthread_create(&p->tx, NULL, tx_thread, p) != 0 ||
-        pthread_create(&p->rx, NULL, rx_thread, p) != 0) {
-        log_msg("pthread_create failed");
-        exit(1);
-    }
+    open_port(i, fd, fd, 0);
     pthread_mutex_unlock(&ports_lock);
     log_msg("host connected on port %d", i);
 }
@@ -947,10 +990,10 @@ int make_admin_socket(void)
         perror("admin socket");
         return -1;
     }
-    unlink(SOCK_PATH);
+    unlink(sock_path);
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, SOCK_PATH, sizeof(addr.sun_path) - 1);
+    strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 8) < 0) {
         perror("admin bind/listen");
         close(fd);
@@ -964,15 +1007,51 @@ int main(int argc, char *argv[])
     pthread_t ager, timer, admin, sig_th;
     struct config start;
     sigset_t set;
+    char *name = NULL;
+    int link_rfd = -1, link_wfd = -1;
+    int restore = 0;
+    int opt;
 
+    while ((opt = getopt(argc, argv, "n:l:r")) != -1) {
+        if (opt == 'n') {
+            name = optarg;
+        } else if (opt == 'l') {
+            if (sscanf(optarg, "%d,%d", &link_rfd, &link_wfd) != 2) {
+                printf("-l needs <read_fd>,<write_fd>\n");
+                return 1;
+            }
+        } else if (opt == 'r') {
+            restore = 1;
+        } else {
+            argc = 0;
+        }
+    }
+    argv += optind - 1;
+    argc -= optind - 1;
     if (argc != 3 && argc != 4) {
-        printf("usage: %s <tcp_port> <num_ports> [config_file]\n", argv[0]);
+        printf("usage: switch [-n name] [-l rfd,wfd] [-r] <tcp_port> <num_ports> [config_file]\n"
+               "  -n name     run as a named switch (own admin socket, shared memory, log)\n"
+               "  -l rfd,wfd  the last port is a trunk link over these pipe fds\n"
+               "  -r          restore the MAC table from shared memory (used by supervisor)\n");
         return 1;
     }
     num_ports = atoi(argv[2]);
     if (num_ports <= 0 || num_ports > MAX_PORTS) {
         printf("num_ports must be 1 to %d\n", MAX_PORTS);
         return 1;
+    }
+    if (link_rfd >= 0) {
+        if (num_ports < 2) {
+            printf("a pipe link needs at least 2 ports\n");
+            return 1;
+        }
+        link_port = num_ports - 1;
+    }
+    if (name != NULL) {
+        snprintf(sock_path, sizeof(sock_path), "/tmp/vswitch-%s.sock", name);
+        snprintf(stats_name, sizeof(stats_name), "/vswitch_stats-%s", name);
+        snprintf(mac_name, sizeof(mac_name), "/vswitch_mac-%s", name);
+        snprintf(dump_file, sizeof(dump_file), "mac_dump-%s.txt", name);
     }
     setvbuf(stdout, NULL, _IOLBF, 0);
 
@@ -996,6 +1075,8 @@ int main(int argc, char *argv[])
         if (config_load(config_path, &start, num_ports) < 0)
             return 1;
     }
+    if (name != NULL && strcmp(start.log_file, "switch.log") == 0)
+        snprintf(start.log_file, sizeof(start.log_file), "switch-%s.log", name);
     cfg = start;
     if (log_start(cfg.log_file) < 0)
         return 1;
@@ -1008,8 +1089,15 @@ int main(int argc, char *argv[])
     for (int i = 0; i < num_ports; i++) {
         ports[i].id = i;
         ports[i].fd = -1;
+        ports[i].wfd = -1;
+        ports[i].wake[0] = -1;
+        ports[i].wake[1] = -1;
         ports[i].state = PORT_FREE;
         ports[i].mirror_to = -1;
+        /* start with the configured VLAN, or apply_config sees a change and
+           flushes the MACs that were just restored from shared memory */
+        ports[i].vlan = start.vlan[i];
+        ports[i].trunk = (i == (link_port >= 0 ? link_port : start.trunk));
         if (pthread_mutex_init(&ports[i].lock, NULL) != 0 ||
             pthread_cond_init(&ports[i].not_empty, NULL) != 0 ||
             pthread_cond_init(&ports[i].can_send, NULL) != 0) {
@@ -1017,16 +1105,16 @@ int main(int argc, char *argv[])
             return 1;
         }
     }
-    if (mac_table_init(&table, cfg.mac_table_size) != 0) {
+    if (mac_table_init(&table, cfg.mac_table_size, mac_name, restore, num_ports) != 0) {
         printf("mac table init failed\n");
         return 1;
     }
     apply_config(&start);
-    if (sem_init(&free_ports, 0, num_ports) < 0) {
+    if (sem_init(&free_ports, 0, num_ports - (link_port >= 0)) < 0) {
         perror("sem_init");
         return 1;
     }
-    stats = stats_create(num_ports);
+    stats = stats_create(stats_name, num_ports);
     if (stats == NULL)
         return 1;
 
@@ -1042,8 +1130,15 @@ int main(int argc, char *argv[])
         printf("pthread_create failed\n");
         return 1;
     }
+    if (link_port >= 0) {
+        pthread_mutex_lock(&ports_lock);
+        open_port(link_port, link_rfd, link_wfd, 1);
+        pthread_mutex_unlock(&ports_lock);
+        log_msg("port %d is a trunk link over pipes (read fd %d, write fd %d)",
+                link_port, link_rfd, link_wfd);
+    }
     log_msg("switch listening on port %s with %d ports, admin socket %s, log %s",
-            argv[1], num_ports, SOCK_PATH, cfg.log_file);
+            argv[1], num_ports, sock_path, cfg.log_file);
 
     while (!stopping()) {
         int fd = accept(server_fd, NULL, NULL);
@@ -1069,8 +1164,7 @@ int main(int argc, char *argv[])
     /* clean shutdown: kick every host, then join every thread */
     for (int i = 0; i < num_ports; i++) {
         pthread_mutex_lock(&ports[i].lock);
-        if (ports[i].fd >= 0)
-            shutdown(ports[i].fd, SHUT_RDWR);
+        kick_port(&ports[i]);
         pthread_mutex_unlock(&ports[i].lock);
     }
     for (int i = 0; i < num_ports; i++) {
@@ -1096,8 +1190,8 @@ int main(int argc, char *argv[])
     sem_destroy(&free_ports);
     close(server_fd);
     close(admin_fd);
-    unlink(SOCK_PATH);
-    stats_destroy(stats);
+    unlink(sock_path);
+    stats_destroy(stats, stats_name);
     log_msg("switch stopped cleanly");
     log_stop();
     return 0;
