@@ -24,8 +24,8 @@ floods broadcasts and unknown destinations inside the frame's VLAN.
 An admin tool, \texttt{swctl}, talks to the switch over a UNIX domain socket
 and reads live counters from shared memory.
 
-\textbf{Completed:} all of Tier 1 (items 1--5) and all of Tier 2 (items 6--13).
-\textbf{Tier 3:} see the last section.
+\textbf{Completed:} all of Tier 1 (items 1--5), all of Tier 2 (items 6--13), and all
+three Tier 3 items: two switches over pipes, the supervisor, and the benchmark.
 
 The switch is clean under ThreadSanitizer and valgrind (0 errors, 0 bytes in
 use at exit) while running my tests: forwarding, partial frames, a frozen
@@ -60,7 +60,7 @@ Thread & What it does \\
 \midrule
 main & Accepts hosts. Waits on the free-port semaphore with \texttt{sem\_timedwait};
        on timeout it sends ``switch full''. Starts the rx and tx threads of a port. \\
-rx (per port) & Reads frames, learns the source MAC, checks port security,
+rx (per port) & Reads frames (from a socket, or from a pipe for the trunk link), learns the source MAC, checks port security,
        sends a mirror copy, and puts the frame on the output queues. Never blocks on a full queue. \\
 tx (per port) & Picks the next frame with weighted round robin, waits for a token,
        writes it to the host, and frees the frame when it is the last user. \\
@@ -86,7 +86,7 @@ Lock & What it protects \\
 \texttt{ports[i].lock} & The port's 3 queues, round-robin state, tokens, rate, VLAN, trunk flag, mirror target, socket fd.
                          Two condition variables use it: \texttt{not\_empty} and \texttt{can\_send}. \\
 bucket locks (16) & One per hash bucket of the MAC table (striped locking). \\
-\texttt{count\_lock} & Number of entries in the MAC table (for the size limit). \\
+\texttt{count\_lock} & Number of MAC entries and the list of free entries. \\
 frame lock & The reference count of one frame. \\
 \texttt{cfg\_lock} & Global settings: aging time, port security limit, wait time. \\
 \texttt{stop\_lock} & The stop flag. \texttt{stop\_cond} wakes the timer and aging threads. \\
@@ -128,25 +128,42 @@ given rx thread, because the ``must join'' flag is claimed under \texttt{ports\_
 
 \section{A real bug}
 
-\textbf{Bug.} For QoS I first wrote aging as: ``if a low-priority frame has waited
-more than 200 ms, send it first''. It looked right with light traffic. While writing
-the QoS test I tried a port rate-limited to 20 frames/s with 40 low and 40 high
-frames queued. Under that load \emph{every} low frame is older than 200 ms, so
-aging picked a low frame every time and high frames waited behind all of them.
-The priorities were turned upside down.
+\textbf{Bug.} For the supervisor, the MAC table lives in shared memory so it
+survives a crash. My test learned two MACs, killed the switch with SIGKILL, and
+checked \texttt{swctl show mac} after the supervisor restarted it. The test failed:
+the table was empty. But the log said
+\emph{``MAC table restored from shared memory: 2 entries''}.
 
-\textbf{How I found it.} The test sends 40 low frames and then 40 high frames, and
-counts how many high frames are among received frames 20 to 50. High frames
-should be the majority there, but with the first version they were not.
+\textbf{How I found it.} So the restore worked and something removed the entries
+right after. I looked at everything that runs between the restore and the first
+command. \texttt{apply\_config()} compares each port's VLAN with the config file
+and, if it changed, flushes that port's MACs (needed when an admin moves a port to
+another VLAN). At startup the ports came from \texttt{calloc}, so their VLAN was 0,
+the config said 1, every port looked ``changed'', and every MAC was flushed.
 
-\textbf{Fix.} Aging may now send only \emph{one} old frame per round-robin round.
-The flag is reset when the round goes back to the high queue. Low frames still
-cannot starve (each round sends at least one), but under heavy load the 5:3:1
-weights still decide. After the fix the test shows about 21 high and 9 low frames
-in that window, all 80 frames arrive, and it passes under ThreadSanitizer.
+\textbf{Fix.} Each port now starts with its VLAN and trunk flag taken from the config,
+so the first \texttt{apply\_config()} sees no change. After the fix the table
+survives both SIGKILL and SIGSEGV, and the earlier tests still pass.
 
 \section{Tier 3}
 
-Not started yet.
+\textbf{Two switches.} \texttt{./twoswitch} makes two pipes and forks two switches
+(as in \texttt{two\_way.c}, Lab 05). Each child keeps only its read end and its write
+end, so the other side sees EOF when it exits. Each switch uses its last port as the
+trunk over these pipes. A pipe cannot be \texttt{shutdown()} like a socket, so the
+trunk rx thread waits with \texttt{poll()} on the pipe and on a small ``wake'' pipe;
+writing one byte to the wake pipe stops it. Hosts on A reach hosts on B in the same
+VLAN, and each switch learns the other's hosts on its trunk port.
+
+\textbf{Supervisor.} \texttt{./supervisor} forks the switch and waits with
+\texttt{waitpid}. If the switch dies from a signal it is started again with
+\texttt{-r}. The MAC table is one shared memory block: entries are linked by array
+index instead of pointer, and the locks are process-shared. On restore the old
+process may have died in the middle of a change, so the switch does not trust the
+chains: it makes the locks again and rebuilds the chains and free list from each
+entry's ``used'' flag. A clean exit (status 0) stops the supervisor too.
+
+\textbf{Benchmark.} See the separate one-page benchmark report (\texttt{benchmark.pdf}).
+Striped locks scale with threads; a global lock and a read-write lock get slower.
 
 \end{document}
